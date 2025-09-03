@@ -60,8 +60,8 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
     __uint(max_entries, 1000);
     __type(key, struct flow);
-    __type(value, struct flow_policy);
-  } policy_enforcement_map SEC(".maps");
+    __type(value, __u32);
+  } legitimate_flows SEC(".maps");
 
 SEC("xdp")
 int xdp_ingress(struct xdp_md *ctx)
