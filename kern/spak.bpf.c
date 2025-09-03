@@ -22,7 +22,6 @@ struct flow
         uint32_t dst_ip;
         char dst_ipv6[16];
     };
-    unsigned short h_proto;
     unsigned short src_port;
     unsigned short dst_port;
     unsigned short proto;
@@ -43,6 +42,27 @@ struct ipv6_frag_header
     uint32_t id;
 };
 
+struct {
+    __uint(type, BPF_MAP_TYPE_BLOOM_FILTER);
+    __type(value, __u16);
+    __uint(max_entries, 100);
+    __uint(map_extra, 3);
+} bloom_filter_ports SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, __u16);
+    __type(value, __u32); //later add keys(key1, key2)
+  } secrets SEC(".maps");
+
+  struct {
+    __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
+    __uint(max_entries, 1000);
+    __type(key, struct flow);
+    __type(value, struct flow_policy);
+  } policy_enforcement_map SEC(".maps");
+
 SEC("xdp")
 int xdp_ingress(struct xdp_md *ctx)
 {
@@ -51,15 +71,13 @@ int xdp_ingress(struct xdp_md *ctx)
     uint32_t size = data_end - data;
     struct ethhdr* eth = data;
     int pkt_len = sizeof(*eth);
-    __be16 l2_proto;
-    u8 l3_proto = 0;
+    u8 proto = 0;
 
     if (unlikely(data + pkt_len > data_end))
     {
         return XDP_DROP;
     }
-    l2_proto = eth->h_proto;
-    if (l2_proto == 0xa888 || l2_proto == 0x0081)
+    if (eth->h_proto == 0xa888 || eth->h_proto == 0x0081)
     {
         struct vlan_hdr* vlan_hdr = data + pkt_len;
         if (unlikely(((void*)(vlan_hdr + sizeof(struct vlan_hdr)) > data_end)))
@@ -68,7 +86,7 @@ int xdp_ingress(struct xdp_md *ctx)
         }
         pkt_len += sizeof(struct vlan_hdr);
 
-        l2_proto = vlan_hdr->h_vlan_encapsulated_proto;
+        eth->h_proto = vlan_hdr->h_vlan_encapsulated_proto;
     }
     struct iphdr* iph = NULL;
     struct ipv6hdr* ip6h = NULL;
@@ -76,7 +94,7 @@ int xdp_ingress(struct xdp_md *ctx)
     bool is_fragment = false;
     struct flow current_flow;
     memset(&current_flow, 0, sizeof(current_flow));
-    if (bpf_ntohs(l2_proto) == ETH_P_IP)
+    if (bpf_ntohs(eth->h_proto) == ETH_P_IP)
     {
         iph = data + pkt_len;
         pkt_len += (iph->ihl * 4);
@@ -87,11 +105,10 @@ int xdp_ingress(struct xdp_md *ctx)
         }
         current_flow.src_ip = iph->saddr;
         current_flow.dst_ip = iph->daddr;
-        l3_proto = iph->protocol;
-        current_flow.h_proto = ETH_P_IP;
+        proto = iph->protocol;
         is_fragment = (bool)(u16)(iph->frag_off & bpf_htons(IP_MF));
     }
-    else if (bpf_ntohs(l2_proto) == ETH_P_IPV6)
+    else if (bpf_ntohs(eth->h_proto) == ETH_P_IPV6)
     {
         ip6h = data + pkt_len;
         pkt_len += sizeof(struct ipv6hdr);
@@ -102,8 +119,7 @@ int xdp_ingress(struct xdp_md *ctx)
         }
         memcpy(&current_flow.src_ipv6, &ip6h->saddr, 16);
         memcpy(&current_flow.dst_ipv6, &ip6h->daddr, 16);
-        l3_proto = ip6h->nexthdr;
-        current_flow.h_proto = ETH_P_IPV6;
+        proto = ip6h->nexthdr;
         if (ip6h->nexthdr == IPPROTO_FRAGMENT)
         {
             is_fragment = true;
@@ -113,7 +129,7 @@ int xdp_ingress(struct xdp_md *ctx)
             {
                 return XDP_DROP;
             }
-            l3_proto = ip6_fragh->nexthdr;
+            proto = ip6_fragh->nexthdr;
         }
     }
     if(is_fragment)
