@@ -2,6 +2,29 @@ use std::env;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize and update git submodules
+    println!("cargo:warning=Initializing git submodules...");
+    
+    let output = Command::new("git")
+        .arg("submodule")
+        .arg("update")
+        .arg("--init")
+        .arg("--recursive")
+        .output()?;
+    
+    if !output.status.success() {
+        eprintln!("Failed to initialize submodules: {}", String::from_utf8_lossy(&output.stderr));
+        return Err("Git submodule initialization failed".into());
+    }
+    
+    println!("cargo:warning=Git submodules initialized successfully");
+    
+    // Tell Cargo to rebuild if these files change
+    println!("cargo:rerun-if-changed=kern/spak.bpf.c");
+    println!("cargo:rerun-if-changed=kern/Makefile");
+    println!("cargo:rerun-if-changed=libbpf/");
+    println!("cargo:rerun-if-changed=.gitmodules");
+    
     // Get the current directory
     let current_dir = env::current_dir()?;
     let kern_dir = current_dir.join("kern");
