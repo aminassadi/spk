@@ -3,6 +3,8 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_tracing.h>
 #include <strings.h>
+#include <string.h>
+
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
 #ifndef IP_MF
@@ -149,8 +151,5 @@ int xdp_ingress(struct xdp_md *ctx)
     }
     current_flow.dst_port = tcp_hdr->dest;
     current_flow.src_port = tcp_hdr->source;
-    
-   
+    bpf_printk("new tcp");
 }
-
-
