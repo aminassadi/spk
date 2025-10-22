@@ -22,3 +22,5 @@ target
 
 # BPF output
 kern/.output/
+.cache
+.vscode

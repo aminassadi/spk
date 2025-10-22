@@ -1,0 +1,7 @@
+[
+    {
+        "directory": "/home/ubuntu/repos/spak/kern",
+        "command": "clang -g -fpack-struct=8 -fno-stack-protector -O2 -target bpf -D__TARGET_ARCH_x86 -I./.output -I../libbpf/include/uapi -I../vmlinux/x86/ -idirafter /usr/lib/llvm-14/lib/clang/14.0.0/include -idirafter /usr/local/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /include -idirafter /usr/include -c spak.bpf.c -o .output/spak.bpf.o",
+        "file": "/home/ubuntu/repos/spak/kern/spak.bpf.c"
+    }
+]

@@ -1,0 +1,18 @@
+CompileFlags:
+  Add:
+    - -target
+    - bpf
+    - -D__TARGET_ARCH_x86
+    - -D__BPF__
+    - -D__KERNEL__
+    - -fpack-struct=8
+    - -fno-stack-protector
+    - -O2
+  Remove:
+    - -W*
+Index:
+  Background: Build
+Diagnostics:
+  ClangTidy:
+    Add: []
+    Remove: "*"
