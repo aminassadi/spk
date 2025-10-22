@@ -137,6 +137,20 @@ int xdp_ingress(struct xdp_md *ctx)
         return XDP_PASS;
     }
     return XDP_PASS;
+    if(proto != IPPROTO_TCP)
+    {
+        return XDP_PASS;
+    }
+    current_flow.proto = IPPROTO_TCP;
+    struct tcphdr* tcp_hdr = data + pkt_len;
+    if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
+    {
+        return XDP_DROP;
+    }
+    current_flow.dst_port = tcp_hdr->dest;
+    current_flow.src_port = tcp_hdr->source;
+    
+   
 }
 
 
