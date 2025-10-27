@@ -24,3 +24,4 @@ target
 kern/.output/
 .cache
 .vscode
+/test/test_siphash
