@@ -4,6 +4,7 @@
 #include <bpf/bpf_tracing.h>
 #include <strings.h>
 #include <string.h>
+#include "siphash.h"
 
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
@@ -11,7 +12,12 @@
 #define IP_MF 0x2000
 #endif
 
+#ifndef unlikely
+#define unlikely(x)	__builtin_expect(!!(x), 0)
+#endif
+
 #define IPPROTO_FRAGMENT 44
+
 struct flow
 {
     union
@@ -31,39 +37,96 @@ struct flow
 
 struct ipv6_frag_header
 {
-    /** Next header type */
     uint8_t nexthdr;
-    /** Fragmentation header size is fixed 8 bytes, so len is always zero */
     uint8_t len;
-    /** Offset, in 8-octet units, relative to the start of the fragmentable part
-     * of the original packet plus 1-bit indicating if more fragments will follow
-     */
     uint16_t frag_offset_flags;
-    /** packet identification value. Needed for reassembly of the original packet
-     */
     uint32_t id;
 };
 
-struct {
-    __uint(type, BPF_MAP_TYPE_BLOOM_FILTER);
-    __type(value, __u16);
-    __uint(max_entries, 100);
-    __uint(map_extra, 3);
-} bloom_filter_ports SEC(".maps");
+struct keys {
+    __u64 key1;
+    __u64 key2;
+} __attribute__((packed));
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
     __type(key, __u16);
-    __type(value, __u32); //later add keys(key1, key2)
+    __type(value, struct keys); 
   } secrets SEC(".maps");
 
   struct {
     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
     __uint(max_entries, 1000);
     __type(key, struct flow);
-    __type(value, __u32);
+    __type(value, __u32);   
   } legitimate_flows SEC(".maps");
+
+
+struct tcp_opt_spa {
+    uint8_t  kind;        // 253 or 254
+    uint8_t  len;         // e.g., 18
+    uint16_t exid;        // network order
+    uint8_t  ver;         // 1
+    uint8_t  key_id;      // selects secret
+    uint32_t time_step;   // network order
+    uint8_t  tag[8];      // SipHash output bytes
+} __attribute__((packed));
+
+
+__attribute__((always_inline)) static inline bool
+authenticate_client(struct tcphdr* tcph, void* data_end, __u32 src_ip)
+{
+    // Check TCP options - must have exactly one option of kind 253
+    void* opt_ptr = (__u8*)tcph + sizeof(struct tcphdr);
+    void* opt_end = (__u8*)tcph + (tcph->doff * 4);
+    
+    if (unlikely(opt_end > data_end)) {
+        return false;
+    }
+
+    if (unlikely(opt_ptr >= data_end)) {
+        return false; // No options present
+    }
+    
+    // Check first option kind - must be 253
+    __u8 kind = *(__u8*)opt_ptr;
+    if (kind != 253) {
+        return false; // First option is not kind 253
+    }
+    
+  
+    struct tcp_opt_spa* spa_opt = (struct tcp_opt_spa*)opt_ptr;
+    if(unlikely((void*)(spa_opt + 1) > data_end)) {
+        return false; // Invalid option length
+    }
+    if (unlikely(spa_opt->len != sizeof(struct tcp_opt_spa))) {
+        return false; // Invalid option length
+    }
+    
+    // Prepare input for SipHash calculation
+    struct spa_input input;
+    input.exid = spa_opt->exid;           // 2B, network order
+    input.ver = spa_opt->ver;            // 1B
+    input.key_id = spa_opt->key_id;      // 1B
+    input.time_step = spa_opt->time_step; // 4B, network order
+    input.tcp_seq = tcph->seq;           // 4B, TCP seq (client ISN)
+    
+    // Get secret key based on key_id
+    struct keys* secret_ptr = bpf_map_lookup_elem(&secrets, &spa_opt->key_id);
+    if (!secret_ptr) {
+        return false; // Unknown key_id
+    }
+    
+    // Calculate SipHash-2-4
+    __u64 k0 = secret_ptr->key1;
+    __u64 k1 = secret_ptr->key2;
+    __u64 hash = siphash_2_4(k0, k1, &input);
+    
+    // Compare with received tag (first 8 bytes)
+    __u64 received_tag = *(__u64*)spa_opt->tag;
+    return (hash == received_tag);
+}
 
 SEC("xdp")
 int xdp_ingress(struct xdp_md *ctx)
@@ -96,6 +159,7 @@ int xdp_ingress(struct xdp_md *ctx)
     bool is_fragment = false;
     struct flow current_flow;
     memset(&current_flow, 0, sizeof(current_flow));
+    current_flow.proto = eth->h_proto;
     if (bpf_ntohs(eth->h_proto) == ETH_P_IP)
     {
         iph = data + pkt_len;
@@ -138,12 +202,10 @@ int xdp_ingress(struct xdp_md *ctx)
     {
         return XDP_PASS;
     }
-    return XDP_PASS;
     if(proto != IPPROTO_TCP)
     {
         return XDP_PASS;
     }
-    current_flow.proto = IPPROTO_TCP;
     struct tcphdr* tcp_hdr = data + pkt_len;
     if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
     {
@@ -151,5 +213,28 @@ int xdp_ingress(struct xdp_md *ctx)
     }
     current_flow.dst_port = tcp_hdr->dest;
     current_flow.src_port = tcp_hdr->source;
-    bpf_printk("new tcp");
+    if (tcp_hdr->syn && !tcp_hdr->ack) {
+        // This is a SYN packet - check for auth option
+        if (tcp_hdr->dest == bpf_htons(22)) { 
+            // Look for your auth option in TCP options
+            if (authenticate_client(tcp_hdr, data_end, current_flow.src_ip)) {
+                __u32 auth_time = bpf_ktime_get_ns() / 1000000000; // Current time in seconds
+                bpf_map_update_elem(&legitimate_flows, &current_flow, &auth_time, BPF_ANY);
+                return XDP_PASS; 
+            } else {
+                return XDP_DROP; 
+            }
+        }
+    }
+    
+    //check if flow is already authenticated
+    if (current_flow.dst_port == bpf_htons(22)) {
+        __u32* auth_time = bpf_map_lookup_elem(&legitimate_flows, &current_flow);
+        if (!auth_time) {
+            return XDP_DROP; // Not authenticated
+        }
+    }
+    
+    return XDP_PASS;
+
 }
