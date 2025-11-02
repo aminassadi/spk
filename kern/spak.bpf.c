@@ -140,6 +140,7 @@ int xdp_ingress(struct xdp_md *ctx)
 
     if (unlikely(data + pkt_len > data_end))
     {
+        bpf_printk("malformed packet\n");
         return XDP_DROP;
     }
     if (eth->h_proto == 0xa888 || eth->h_proto == 0x0081)
@@ -147,6 +148,7 @@ int xdp_ingress(struct xdp_md *ctx)
         struct vlan_hdr* vlan_hdr = data + pkt_len;
         if (unlikely(((void*)(vlan_hdr + sizeof(struct vlan_hdr)) > data_end)))
         {
+            bpf_printk("malformed packet\n");
             return XDP_DROP;
         }
         pkt_len += sizeof(struct vlan_hdr);
@@ -166,7 +168,7 @@ int xdp_ingress(struct xdp_md *ctx)
         pkt_len += (iph->ihl * 4);
         if (unlikely((void*)iph + sizeof(struct iphdr) > data_end))
         {
-            // malformed packet
+            bpf_printk("malformed packet\n");
             return XDP_DROP;
         }
         current_flow.src_ip = iph->saddr;
@@ -180,7 +182,7 @@ int xdp_ingress(struct xdp_md *ctx)
         pkt_len += sizeof(struct ipv6hdr);
         if (unlikely(data + pkt_len > data_end))
         {
-            // malformed packet
+            bpf_printk("malformed packet\n");
             return XDP_DROP;
         }
         memcpy(&current_flow.src_ipv6, &ip6h->saddr, 16);
@@ -193,6 +195,7 @@ int xdp_ingress(struct xdp_md *ctx)
             pkt_len += sizeof(struct ipv6_frag_header);
             if (unlikely(data + pkt_len > data_end))
             {
+                bpf_printk("malformed packet\n");
                 return XDP_DROP;
             }
             proto = ip6_fragh->nexthdr;
@@ -200,6 +203,7 @@ int xdp_ingress(struct xdp_md *ctx)
     }
     if(is_fragment)
     {
+        bpf_printk("fragmented packet\n");
         return XDP_PASS;
     }
     if(proto != IPPROTO_TCP)
@@ -209,6 +213,7 @@ int xdp_ingress(struct xdp_md *ctx)
     struct tcphdr* tcp_hdr = data + pkt_len;
     if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
     {
+        bpf_printk("malformed packet\n");
         return XDP_DROP;
     }
     current_flow.dst_port = tcp_hdr->dest;
@@ -222,6 +227,7 @@ int xdp_ingress(struct xdp_md *ctx)
                 bpf_map_update_elem(&legitimate_flows, &current_flow, &auth_time, BPF_ANY);
                 return XDP_PASS; 
             } else {
+                bpf_printk("authentication failed\n");
                 return XDP_DROP; 
             }
         }
@@ -231,6 +237,7 @@ int xdp_ingress(struct xdp_md *ctx)
     if (current_flow.dst_port == bpf_htons(22)) {
         __u32* auth_time = bpf_map_lookup_elem(&legitimate_flows, &current_flow);
         if (!auth_time) {
+            bpf_printk("not authenticated\n");
             return XDP_DROP; // Not authenticated
         }
     }
