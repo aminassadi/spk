@@ -1,0 +1,17 @@
+[package]
+name = "spak-server"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+
+[dependencies]
+aya = "0.13"
+aya-log = "0.2"
+log = "0.4"
+env_logger = "0.10"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+

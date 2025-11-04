@@ -1,7 +1,7 @@
-OUTPUT := ./.output
+OUTPUT := ../.output
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
-LIBBPF_SRC := $(abspath ../libbpf/src)
+LIBBPF_SRC := $(abspath ../../libbpf/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/aarch64/arm64/' \
@@ -9,13 +9,13 @@ ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/mips.*/mips/' \
 			 | sed 's/arm.*/arm/' \
 			 | sed 's/riscv64/riscv/')
-VMLINUX := ../vmlinux/$(ARCH)/vmlinux.h
+VMLINUX := ../../vmlinux/$(ARCH)/vmlinux.h
 
-INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi -I$(dir $(VMLINUX))
+INCLUDES := -I$(OUTPUT) -I../../libbpf/include/uapi -I$(dir $(VMLINUX))
 CFLAGS := -g -Wall
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
 
-APPS = spak
+APPS = spak.server
 
 
 CLANG_BPF_SYS_INCLUDES = $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -65,7 +65,7 @@ $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPU
 
 
 # Build BPF code
-$(OUTPUT)/$(APPS).bpf.o: spak.bpf.c siphash.h $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT)
+$(OUTPUT)/$(APPS).bpf.o: spak.server.bpf.c ../siphash.h $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT)
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -fpack-struct=8 -fno-stack-protector -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 	$(Q)$(LLVM_STRIP) -g $@ # strip useless DWARF info

@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting SPAK eBPF program...");
 
     // Load the eBPF object file
-    let data = include_bytes_aligned!("../kern/.output/spak.bpf.o");
+    let data = include_bytes_aligned!("../../kern/.output/spak.server.bpf.o");
     let mut bpf = Ebpf::load(data)?;
 
     // Get the XDP program
@@ -46,5 +46,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    Ok(())
 }

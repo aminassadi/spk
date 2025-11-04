@@ -4,7 +4,7 @@
 #include <bpf/bpf_tracing.h>
 #include <strings.h>
 #include <string.h>
-#include "siphash.h"
+#include "../siphash.h"
 
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD

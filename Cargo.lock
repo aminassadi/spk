@@ -509,7 +509,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "spak"
+name = "spak-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "aya-log",
+ "clap",
+ "env_logger",
+ "log",
+ "tokio",
+]
+
+[[package]]
+name = "spak-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
