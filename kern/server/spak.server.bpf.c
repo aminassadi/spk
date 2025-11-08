@@ -133,7 +133,6 @@ int xdp_ingress(struct xdp_md *ctx)
 {
     void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
-    uint32_t size = data_end - data;
     struct ethhdr* eth = data;
     int pkt_len = sizeof(*eth);
     u8 proto = 0;
