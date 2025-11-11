@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{self, Command};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -99,14 +99,29 @@ struct BuildLock {
 
 impl BuildLock {
     fn acquire(path: &Path) -> Result<Self, String> {
+        let pid = process::id();
         loop {
             match fs::create_dir(path) {
                 Ok(_) => {
+                    let pid_path = path.join("pid");
+                    if let Err(e) = fs::write(&pid_path, format!("{}", pid)) {
+                        let _ = fs::remove_dir_all(path);
+                        return Err(format!(
+                            "failed to record lock owner {}: {}",
+                            pid_path.display(),
+                            e
+                        ));
+                    }
                     return Ok(BuildLock {
                         path: path.to_path_buf(),
-                    })
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if BuildLock::is_stale(path)? {
+                        fs::remove_dir_all(path)
+                            .map_err(|err| format!("failed to clear stale lock: {}", err))?;
+                        continue;
+                    }
                     sleep(Duration::from_millis(100));
                 }
                 Err(e) => {
@@ -117,6 +132,31 @@ impl BuildLock {
                     ))
                 }
             }
+        }
+    }
+
+    fn is_stale(path: &Path) -> Result<bool, String> {
+        let pid_path = path.join("pid");
+        match fs::read_to_string(&pid_path) {
+            Ok(contents) => {
+                let contents = contents.trim();
+                match contents.parse::<u32>() {
+                    Ok(owner_pid) => {
+                        if owner_pid == process::id() {
+                            return Ok(true);
+                        }
+                        let proc_path = Path::new("/proc").join(owner_pid.to_string());
+                        Ok(!proc_path.exists())
+                    }
+                    Err(_) => Ok(true),
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(e) => Err(format!(
+                "failed to inspect lock owner {}: {}",
+                pid_path.display(),
+                e
+            )),
         }
     }
 }
