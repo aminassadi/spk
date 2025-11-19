@@ -23,6 +23,10 @@
 #endif
 #define IPPROTO_FRAGMENT 44
 
+#ifndef unlikely
+#define unlikely(x)	__builtin_expect(!!(x), 0)
+#endif
+
 struct flow
 {
     union
@@ -48,7 +52,43 @@ struct ipv6_frag_header
     uint32_t id;
 };
 
+struct tcp_opt_spa {
+    uint8_t  kind;        // 253 or 254
+    uint8_t  len;         // e.g., 18
+    uint16_t exid;        // network order
+    uint8_t  ver;         // 1
+    uint8_t  key_id;      // selects secret
+    uint32_t time_step;   // network order
+    uint8_t  tag[8];      // SipHash output bytes
+} __attribute__((packed));
 
+__attribute__((always_inline)) static inline void add_digest(struct tcphdr* tcph, struct __sk_buff *ctx)
+{
+    // Add your digest logic here
+    bpf_printk("adding digest\n");
+    void* opt_ptr = (__u8*)tcph + sizeof(struct tcphdr);
+    void* opt_end = (__u8*)tcph + (tcph->doff * 4);
+    void* data_end = (void*)(__u64)ctx->data_end;
+
+    if (unlikely(opt_end > data_end)) {
+        bpf_printk("malformed packet\n");
+        return;
+    }
+    if (unlikely(opt_ptr >= data_end)) {
+        bpf_printk("malformed packet\n");
+        return; // No options present
+    }
+   // struct tcp_opt_spa* spa_opt = (struct tcp_opt_spa*)opt_ptr;
+    // Grow the packet by the size of struct tcp_opt_spa at the tail
+    int spa_opt_size = sizeof(struct tcp_opt_spa);
+    int ret = bpf_skb_change_tail(ctx, ctx->len + spa_opt_size, 0);
+    if (ret < 0) {
+        bpf_printk("failed to grow skb: %d\n", ret);
+        return;
+    }
+    memcpy(, )
+ 
+}
 SEC("classifier/egress")
 int tc_egress(struct __sk_buff *ctx)
 {
@@ -122,6 +162,24 @@ int tc_egress(struct __sk_buff *ctx)
             }
             proto = ip6_fragh->nexthdr;
         }
+    }
+    bpf_printk("packet: %d", proto);
+    if(proto != IPPROTO_TCP)
+    {
+        return TC_ACT_OK;
+    }
+    struct tcphdr* tcp_hdr = data + pkt_len;
+    if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
+    {
+        bpf_printk("malformed packet\n");
+        return TC_ACT_SHOT;
+    }
+
+    current_flow.dst_port = tcp_hdr->dest;
+    current_flow.src_port = tcp_hdr->source;
+    if (tcp_hdr->syn && !tcp_hdr->ack) {
+        add_digest(tcp_hdr, ctx);
+        return TC_ACT_OK;
     }
     // Example: Log that we're processing egress traffic
     // (In production, you'd use perf events or other mechanisms)
