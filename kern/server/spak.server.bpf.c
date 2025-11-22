@@ -17,6 +17,7 @@
 #endif
 
 #define IPPROTO_FRAGMENT 44
+#define MAX_TCP_OPTIONS 10
 
 struct flow
 {
@@ -74,34 +75,53 @@ struct tcp_opt_spa {
 } __attribute__((packed));
 
 
-__attribute__((always_inline)) static inline bool
-authenticate_client(struct tcphdr* tcph, void* data_end, __u32 src_ip)
+__attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr* tcph, void* data_end, struct tcp_opt_spa* spa_opt)
 {
-    // Check TCP options - must have exactly one option of kind 253
     void* opt_ptr = (__u8*)tcph + sizeof(struct tcphdr);
     void* opt_end = (__u8*)tcph + (tcph->doff * 4);
-    
+
     if (unlikely(opt_end > data_end)) {
         return false;
     }
 
-    if (unlikely(opt_ptr >= data_end)) {
-        return false; // No options present
+    #pragma unroll
+    for (int i = 0; i < MAX_TCP_OPTIONS; i++) {
+        if (unlikely(opt_ptr >= data_end)) {
+            return false; // No options present
+        }
+        __u8 kind = *(__u8*)opt_ptr;
+        bpf_printk("kind: %d\n", kind);
+        if (kind == 253) {
+            bpf_printk("found spa opt\n");
+            spa_opt = (struct tcp_opt_spa*)opt_ptr;
+            if (unlikely(opt_ptr + sizeof(struct tcp_opt_spa) > data_end)) {
+                return false;
+            }
+            return true;
+        }
+        if(kind == 1) {
+            opt_ptr += 1;
+            continue;
+        }
+        if(kind == 0) {
+            return false;
+        }
+        if (unlikely(opt_ptr + 1 >= data_end)) {
+            return false;
+        }
+        __u8 len = *(__u8*)(opt_ptr + 1);
+        bpf_printk("len: %d\n", len);
+        opt_ptr += len;
     }
-    
-    // Check first option kind - must be 253
-    __u8 kind = *(__u8*)opt_ptr;
-    if (kind != 253) {
-        return false; // First option is not kind 253
-    }
-    
-  
-    struct tcp_opt_spa* spa_opt = (struct tcp_opt_spa*)opt_ptr;
-    if(unlikely((void*)(spa_opt + 1) > data_end)) {
-        return false; // Invalid option length
-    }
-    if (unlikely(spa_opt->len != sizeof(struct tcp_opt_spa))) {
-        return false; // Invalid option length
+    return false;
+}
+
+__attribute__((always_inline)) static inline bool
+authenticate_client(struct tcphdr* tcph, void* data_end, __u32 src_ip)
+{
+    struct tcp_opt_spa* spa_opt;
+    if (!extract_spa_opt(tcph, data_end, &spa_opt)) {
+        return false;
     }
     
     // Prepare input for SipHash calculation
