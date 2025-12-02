@@ -25,7 +25,6 @@
 #endif
 #define IPPROTO_FRAGMENT 44
 #define MAX_OPTIONS_SIZE 64
-#define MAX_TCP_LEN 256
 
 
 #ifndef unlikely
@@ -164,9 +163,8 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
    
     int spa_opt_size = sizeof(struct tcp_opt_spa) + 2; //two nop for alignment
     __u32 current_options_len = opt_end - opt_ptr;
-   
-    int ret = bpf_skb_change_tail(ctx, ctx->len + spa_opt_size, 0);
- //   int ret = bpf_skb_change_tail(ctx, 512, 0);
+    u32 actual_packet_size = ctx->len + spa_opt_size;
+    int ret = bpf_skb_change_tail(ctx, ctx->len + MAX_OPTIONS_SIZE, 0);
     if (ret < 0) {
         bpf_printk("failed to grow skb: %d\n", ret);
         return ;
@@ -233,14 +231,14 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
         return;
     }
  
-    asm volatile("%[tcp_len] &= 63\n" : [tcp_len] "+&r"(tcp_len));
 
    __u32 value = bpf_csum_diff(0, 0, (void*)tcph, sizeof(struct tcphdr), 0);
-   if(unlikely(opt_ptr + 40 > data_end)) {
+   if(unlikely(opt_ptr + MAX_OPTIONS_SIZE > data_end)) {
     bpf_printk("malformed packet8\n");
     return;
    }
-   value = bpf_csum_diff(0, 0, (void*)opt_ptr, 40, value);
+  // asm volatile("%[rem_size] &= 31\n" : [rem_size] "+&r"(rem_size));
+   value = bpf_csum_diff(0, 0, (void*)opt_ptr, MAX_OPTIONS_SIZE, value);
 
 
     if(is_ipv6) {
@@ -267,6 +265,11 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
         bpf_printk("after: tcp->check: %d\n", tcph->check);
     }
 
+    ret = bpf_skb_change_tail(ctx, actual_packet_size, 0);
+    if (ret < 0) {
+        bpf_printk("failed to change tail: %d\n", ret);
+        return; 
+    }
     bpf_printk("end");
 }
 
