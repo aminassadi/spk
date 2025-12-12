@@ -68,8 +68,8 @@ struct tcp_opt_spa {
     uint8_t  kind;        // 253 or 254
     uint8_t  len;         // e.g., 18
     uint16_t exid;        // network order
-    uint8_t  ver;         // 1
-    uint8_t  key_id;      // selects secret
+    uint16_t  ver;         // 1
+    uint16_t  key_id;      // selects secret
     uint32_t time_step;   // network order
     uint8_t  tag[8];      // SipHash output bytes
 } __attribute__((packed));

@@ -60,8 +60,8 @@ struct tcp_opt_spa {
     uint8_t  kind;        // 253 or 254
     uint8_t  len;         // e.g., 18
     uint16_t exid;        // network order
-    uint8_t  ver;         // 1
-    uint8_t  key_id;      // selects secret
+    uint16_t  ver;         // 1
+    uint16_t  key_id;      // selects secret
     uint32_t time_step;   // network order
     uint8_t  tag[8];      // SipHash output bytes
 } __attribute__((packed));
@@ -170,7 +170,7 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     void* opt_ptr = (__u8*)tcph + sizeof(struct tcphdr);
     void* opt_end = (__u8*)tcph + (tcph->doff * 4);
    
-    int spa_opt_size = sizeof(struct tcp_opt_spa) + 2; //two nop for alignment
+    int spa_opt_size = sizeof(struct tcp_opt_spa); 
     __u32 current_options_len = opt_end - opt_ptr;
     u32 actual_packet_size = ctx->len + spa_opt_size;
     int ret = bpf_skb_change_tail(ctx, ctx->len + MAX_OPTIONS_SIZE, 0);
@@ -235,15 +235,7 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     __u64 k1 = secret_ptr->key2;
     __u64 hash = siphash_2_4(k0, k1, &input);
     memcpy(spa_opt->tag, &hash, 8);
-    __u8* nop_ptr1 = opt_ptr + sizeof(struct tcp_opt_spa);
-    __u8* nop_ptr2 = opt_ptr + sizeof(struct tcp_opt_spa) + 1;
-
-    if(unlikely(nop_ptr1 + 3 > data_end)){
-        bpf_printk("malformed packet5\n");
-        return;
-    }
-    *nop_ptr1 = 1;
-    *nop_ptr2 = 1;
+    
 
     tcph->doff += spa_opt_size / 4;
     tcph->check = 0;
