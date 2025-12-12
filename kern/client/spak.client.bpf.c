@@ -66,6 +66,19 @@ struct tcp_opt_spa {
     uint8_t  tag[8];      // SipHash output bytes
 } __attribute__((packed));
 
+
+struct keys {
+    __u64 key1;
+    __u64 key2;
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, __u16);
+    __type(value, struct keys); 
+  } secrets SEC(".maps");
+
 static __always_inline __sum16 csum_fold(__wsum csum) {
     csum = (csum & 0xffff) + (csum >> 16);
     csum = (csum & 0xffff) + (csum >> 16);
@@ -146,11 +159,7 @@ ipv4_csum(void* data_start, int data_size, __u64* csum) {
 
 __attribute__((always_inline)) static inline void add_digest(int ip_header_offset, bool is_ipv6, int tcp_header_offset, struct __sk_buff *ctx)
 {
-    // Add your digest logic here
-    bpf_printk("adding digest\n");
 
-   // struct tcp_opt_spa* spa_opt = (struct tcp_opt_spa*)opt_ptr;
-    // Grow the packet by the size of struct tcp_opt_spa at the tail
     void* data_end = (void*)(__u64)ctx->data_end;
     struct tcphdr* tcph = (struct tcphdr*)((void *)(__u64)ctx->data + tcp_header_offset);
     if (unlikely((void*)tcph + sizeof(struct tcphdr) > data_end))
@@ -210,7 +219,22 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     spa_opt->len = sizeof(struct tcp_opt_spa);
     spa_opt->exid = bpf_htons(1);
     spa_opt->ver = 1;
-
+    spa_opt->key_id = 1;
+    struct keys* secret_ptr = bpf_map_lookup_elem(&secrets, &spa_opt->key_id);
+    if (!secret_ptr) {
+        bpf_printk("unknown key_id\n");
+        return ; // Unknown key_id
+    }
+    struct spa_input input;
+    input.exid = spa_opt->exid;           // 2B, network order
+    input.ver = spa_opt->ver;            // 1B
+    input.key_id = spa_opt->key_id;      // 1B
+    input.time_step = spa_opt->time_step; // 4B, network order
+    input.tcp_seq = tcph->seq;           // 4B, TCP seq (client ISN)
+    __u64 k0 = secret_ptr->key1;
+    __u64 k1 = secret_ptr->key2;
+    __u64 hash = siphash_2_4(k0, k1, &input);
+    memcpy(spa_opt->tag, &hash, 8);
     __u8* nop_ptr1 = opt_ptr + sizeof(struct tcp_opt_spa);
     __u8* nop_ptr2 = opt_ptr + sizeof(struct tcp_opt_spa) + 1;
 
