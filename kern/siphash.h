@@ -4,7 +4,8 @@
 struct spa_input {
     __u16 exid;        // 2B, network order
     __u8  ver;         // 1B
-    __u8  key_id;      // 1B
+    __u8 reserved;     // 1B should be zero
+    __u16  key_id;      // 2B
     __u32 time_step;   // 4B, network order
     __u32 tcp_seq;     // 4B, TCP sequence number (client ISN)
 } __attribute__((packed));

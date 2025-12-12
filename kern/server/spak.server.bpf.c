@@ -51,7 +51,7 @@ struct keys {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
+    __uint(max_entries, 1024);
     __type(key, __u16);
     __type(value, struct keys); 
   } secrets SEC(".maps");
@@ -75,7 +75,7 @@ struct tcp_opt_spa {
 } __attribute__((packed));
 
 
-__attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr* tcph, void* data_end, struct tcp_opt_spa* spa_opt)
+__attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr* tcph, void* data_end, struct tcp_opt_spa** spa_opt)
 {
     void* opt_ptr = (__u8*)tcph + sizeof(struct tcphdr);
     void* opt_end = (__u8*)tcph + (tcph->doff * 4);
@@ -93,8 +93,8 @@ __attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr*
         bpf_printk("kind: %d\n", kind);
         if (kind == 253) {
             bpf_printk("found spa opt\n");
-            spa_opt = (struct tcp_opt_spa*)opt_ptr;
-            if (unlikely(opt_ptr + sizeof(struct tcp_opt_spa) > data_end)) {
+            *spa_opt = (struct tcp_opt_spa*)opt_ptr;
+            if (unlikely((__u8*)opt_ptr + sizeof(struct tcp_opt_spa) > (__u8*)data_end)) {
                 return false;
             }
             return true;
@@ -119,20 +119,21 @@ __attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr*
 __attribute__((always_inline)) static inline bool
 authenticate_client(struct tcphdr* tcph, void* data_end, __u32 src_ip)
 {
-    struct tcp_opt_spa* spa_opt;
+    struct tcp_opt_spa* spa_opt = NULL;
     if (!extract_spa_opt(tcph, data_end, &spa_opt)) {
         return false;
     }
     
     // Prepare input for SipHash calculation
     struct spa_input input;
+    memset(&input, 0, sizeof(input));
     input.exid = spa_opt->exid;           // 2B, network order
     input.ver = spa_opt->ver;            // 1B
-    input.key_id = spa_opt->key_id;      // 1B
+    input.key_id = spa_opt->key_id;      // 2B
     input.time_step = spa_opt->time_step; // 4B, network order
     input.tcp_seq = tcph->seq;           // 4B, TCP seq (client ISN)
     
-    // Get secret key based on key_id
+   // Get secret key based on key_id
     struct keys* secret_ptr = bpf_map_lookup_elem(&secrets, &spa_opt->key_id);
     if (!secret_ptr) {
         return false; // Unknown key_id

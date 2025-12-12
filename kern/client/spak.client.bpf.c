@@ -226,6 +226,7 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
         return ; // Unknown key_id
     }
     struct spa_input input;
+    memset(&input, 0, sizeof(input));
     input.exid = spa_opt->exid;           // 2B, network order
     input.ver = spa_opt->ver;            // 1B
     input.key_id = spa_opt->key_id;      // 1B

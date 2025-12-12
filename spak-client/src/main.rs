@@ -71,6 +71,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ensure_clsact_qdisc(IFACE).context("failed to prepare clsact qdisc")?;
     let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    ctrlc::set_handler(move || {
+        eprintln!("\nReceived Ctrl+C, detaching eBPF program...");
+        shutdown_clone.store(true, Ordering::SeqCst);
+    })?;
     let data: &[u8] = include_bytes_aligned!("../../kern/.output/spak.client.bpf.o");
     let bpf_object = BpfObject::new(data)?;
     let link_id = bpf_object.attach_program("tc_egress")?;
@@ -83,20 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while !shutdown.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_secs(1));
     }
+    println!("Detaching eBPF program...");
     bpf_object.detach_program(link_id)?;
     if let Err(err) = remove_clsact_qdisc(IFACE) {
         warn!("{err:#}");
     }
     Ok(())
-}
-
-fn detach_classifier(
-    program: &mut programs::SchedClassifier,
-    link_id: SchedClassifierLinkId,
-) -> Result<()> {
-    program
-        .detach(link_id)
-        .context("failed to detach tc program from interface")
 }
 
 fn ensure_clsact_qdisc(iface: &str) -> Result<()> {
