@@ -1,0 +1,13 @@
+# Exclude generated vmlinux headers from language statistics
+vmlinux/** linguist-generated=true
+
+# Exclude build artifacts
+target/** linguist-generated=true
+kern/.output/** linguist-generated=true
+
+# Exclude libbpf submodule from language statistics
+libbpf/** linguist-vendored=true
+
+# Exclude test artifacts
+tests/test_siphash linguist-generated=true
+
