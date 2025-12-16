@@ -8,9 +8,28 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use std::cell::RefCell;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::rc::Rc;
 
 const IFACE: &str = "lo";
+
+fn ipv4_to_u32(ip_str: &str) -> Option<u32> {
+    let ip: Ipv4Addr = ip_str.parse().ok()?;
+    Some(ip.to_bits())
+}
+
+fn ipv4_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
+    let mut ip_u32 = ipv4_to_u32(ip_str)?;
+    let mut bytes: [u8; 16] = [0u8; 16];
+    bytes[..4].copy_from_slice(&ip_u32.to_be_bytes());
+    Some(bytes)
+}
+
+fn ipv6_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
+    let ip: Ipv6Addr = ip_str.parse().ok()?;
+    Some(ip.octets())
+}
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -19,6 +38,22 @@ struct Keys {
     key2: u64,
 }
 unsafe impl aya::Pod for Keys {}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct TargetKeys {
+    keys: Keys,
+    key_id: u16,
+}
+unsafe impl aya::Pod for TargetKeys {}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct Destination {
+    ip: [u8; 16],
+    port: u16,
+}
+unsafe impl aya::Pod for Destination {}
 
 struct BpfObject {
     value: RefCell<Ebpf>,
@@ -55,13 +90,11 @@ impl BpfObject {
         Ok(())
     }
 
-    fn insert_secret(&self, key_id: u16, secret: Keys) -> Result<(), String> {
+    fn insert_secret(&self, key: Destination, secret: TargetKeys) -> Result<(), String> {
         let mut bpf = self.value.borrow_mut();
         let mut secrets =
             HashMap::try_from(bpf.map_mut("secrets").ok_or("Failed to get secrets map")?).unwrap();
-        secrets
-            .insert(key_id, secret, 0)
-            .map_err(|e| e.to_string())?;
+        secrets.insert(key, secret, 0).map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -80,11 +113,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bpf_object = BpfObject::new(data)?;
     let link_id = bpf_object.attach_program("tc_egress")?;
     let key_id: u16 = 1;
-    let secret = Keys {
-        key1: 0x1122334455667788,
-        key2: 0x99aabbccddeeff00,
+    let secret = TargetKeys {
+        keys: Keys {
+            key1: 0x1122334455667788,
+            key2: 0x99aabbccddeeff00,
+        },
+        key_id: key_id,
     };
-    bpf_object.insert_secret(key_id, secret)?;
+    let target_ip: [u8; 16] = ipv4_to_bytes("127.0.0.1").unwrap();
+
+    let dest = Destination {
+        ip: target_ip,
+        port: 22,
+    };
+    bpf_object.insert_secret(dest, secret)?;
     while !shutdown.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_secs(1));
     }

@@ -41,6 +41,17 @@ struct keys {
     __u64 key2;
 } __attribute__((packed));
 
+struct destination
+{
+    char ip[16];
+    __u16 port;
+};
+
+struct target_keys{
+    struct keys keys;
+    __u16 key_id;
+};
+
 struct tcp_opt_spa {
     uint8_t  kind;        // 253 or 254
     uint8_t  len;         // e.g., 18

@@ -19,16 +19,7 @@
 
 #define MAX_OPTIONS_SIZE 64
 
-struct destination
-{
-    char ip[16];
-    __u16 port;
-};
 
-struct target_keys{
-    struct keys keys;
-    __u16 key_id;
-};
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -195,7 +186,6 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     tcph->check = 0;
    
     __u32 tcp_len = tcph->doff * 4;
-    bpf_printk("tcp_len: %d\n", tcp_len);
     if(unlikely((void*)tcph + tcp_len > data_end )) {
         bpf_printk("malformed packet7\n");
         return;
@@ -233,13 +223,11 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
         tcph->check = csum_tcpudp_ip(iph->saddr, iph->daddr, tcp_len, IPPROTO_TCP, value);
         bpf_printk("after: tcp->check: %d\n", tcph->check);
     }
-
     ret = bpf_skb_change_tail(ctx, actual_packet_size, 0);
     if (ret < 0) {
         bpf_printk("failed to change tail: %d\n", ret);
         return; 
     }
-    bpf_printk("end");
 }
 
 SEC("classifier/egress")
@@ -326,7 +314,6 @@ int tc_egress(struct __sk_buff *ctx)
     bpf_printk("dest.port: %d, dest.ip: %d\n", dest.port, *(__u32*)dest.ip);
     struct target_keys* keys = bpf_map_lookup_elem(&secrets, &dest);
     if (!keys) {
-        pf_printk("unknown destination\n");
         return TC_ACT_OK;
     }
     if (tcp_hdr->syn && !tcp_hdr->ack) {
