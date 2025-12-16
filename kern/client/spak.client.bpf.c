@@ -19,13 +19,23 @@
 
 #define MAX_OPTIONS_SIZE 64
 
+struct destination
+{
+    char ip[16];
+    __u16 port;
+};
+
+struct target_keys{
+    struct keys keys;
+    __u16 key_id;
+};
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
-    __type(key, __u16);
-    __type(value, struct keys); 
-  } secrets SEC(".maps");
+    __uint(max_entries, 1024);
+    __type(key, struct destination);
+    __type(value, struct target_keys); 
+} secrets SEC(".maps");
 
 static __always_inline __sum16 csum_fold(__wsum csum) {
     csum = (csum & 0xffff) + (csum >> 16);
@@ -105,7 +115,7 @@ ipv4_csum(void* data_start, int data_size, __u64* csum) {
   *csum = csum_fold_helper(*csum);
 }
 
-__attribute__((always_inline)) static inline void add_digest(int ip_header_offset, bool is_ipv6, int tcp_header_offset, struct __sk_buff *ctx)
+__attribute__((always_inline)) static inline void add_digest(int ip_header_offset, bool is_ipv6, int tcp_header_offset, struct __sk_buff *ctx, struct target_keys* keys)
 {
 
     void* data_end = (void*)(__u64)ctx->data_end;
@@ -167,21 +177,16 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     spa_opt->len = sizeof(struct tcp_opt_spa);
     spa_opt->exid = bpf_htons(1);
     spa_opt->ver = 1;
-    spa_opt->key_id = 1;
-    struct keys* secret_ptr = bpf_map_lookup_elem(&secrets, &spa_opt->key_id);
-    if (!secret_ptr) {
-        bpf_printk("unknown key_id\n");
-        return ; // Unknown key_id
-    }
+    spa_opt->key_id = keys->key_id;
     struct spa_input input;
     memset(&input, 0, sizeof(input));
-    input.exid = spa_opt->exid;           // 2B, network order
-    input.ver = spa_opt->ver;            // 1B
-    input.key_id = spa_opt->key_id;      // 1B
-    input.time_step = spa_opt->time_step; // 4B, network order
-    input.tcp_seq = tcph->seq;           // 4B, TCP seq (client ISN)
-    __u64 k0 = secret_ptr->key1;
-    __u64 k1 = secret_ptr->key2;
+    input.exid = spa_opt->exid;           
+    input.ver = spa_opt->ver;            
+    input.key_id = spa_opt->key_id;     
+    input.time_step = spa_opt->time_step; 
+    input.tcp_seq = tcph->seq;           
+    __u64 k0 = keys->keys.key1;
+    __u64 k1 = keys->keys.key2;
     __u64 hash = siphash_2_4(k0, k1, &input);
     memcpy(spa_opt->tag, &hash, 8);
     
@@ -202,7 +207,6 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
     bpf_printk("malformed packet8\n");
     return;
    }
-  // asm volatile("%[rem_size] &= 31\n" : [rem_size] "+&r"(rem_size));
    value = bpf_csum_diff(0, 0, (void*)opt_ptr, MAX_OPTIONS_SIZE, value);
 
 
@@ -241,9 +245,6 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
 SEC("classifier/egress")
 int tc_egress(struct __sk_buff *ctx)
 {
-    // Simple TC egress program that passes all traffic
-    // You can add packet inspection/modification logic here
-    
     void *data_end = (void *)(__u64)ctx->data_end;
     void *data = (void *)(__u64)ctx->data;
     struct ethhdr* eth = data;
@@ -271,9 +272,8 @@ int tc_egress(struct __sk_buff *ctx)
     int ip_header_offset = pkt_len;
     bool is_ipv6 = false;
     bool is_fragment = false;
-    struct flow current_flow;
-    memset(&current_flow, 0, sizeof(current_flow));
-    current_flow.proto = eth->h_proto;
+    struct destination dest;
+    memset(&dest, 0, sizeof(dest));
     if (bpf_ntohs(eth->h_proto) == ETH_P_IP)
     {
         iph = data + pkt_len;
@@ -283,10 +283,9 @@ int tc_egress(struct __sk_buff *ctx)
             bpf_printk("malformed packet\n");
             return TC_ACT_SHOT;
         }
-        current_flow.src_ip = iph->saddr;
-        current_flow.dst_ip = iph->daddr;
-        proto = iph->protocol;
+        memcpy(&dest.ip, &iph->daddr, 4);
         is_fragment = (bool)(u16)(iph->frag_off & bpf_htons(IP_MF));
+        proto = iph->protocol;
     }
     else if (bpf_ntohs(eth->h_proto) == ETH_P_IPV6)
     {
@@ -298,8 +297,7 @@ int tc_egress(struct __sk_buff *ctx)
             bpf_printk("malformed packet\n");
             return TC_ACT_SHOT;
         }
-        memcpy(&current_flow.src_ipv6, &ip6h->saddr, 16);
-        memcpy(&current_flow.dst_ipv6, &ip6h->daddr, 16);
+        memcpy(&dest.ip, &ip6h->daddr, 16);
         proto = ip6h->nexthdr;
         if (ip6h->nexthdr == IPPROTO_FRAGMENT)
         {
@@ -314,7 +312,6 @@ int tc_egress(struct __sk_buff *ctx)
             proto = ip6_fragh->nexthdr;
         }
     }
-    bpf_printk("packet: %d", proto);
     if(proto != IPPROTO_TCP)
     {
         return TC_ACT_OK;
@@ -325,17 +322,17 @@ int tc_egress(struct __sk_buff *ctx)
         bpf_printk("malformed packet\n");
         return TC_ACT_SHOT;
     }
-
-    // current_flow.dst_port = tcp_hdr->dest;
-    // current_flow.src_port = tcp_hdr->source;
-    if (tcp_hdr->syn && !tcp_hdr->ack) {
-        add_digest(ip_header_offset, is_ipv6, pkt_len, ctx);
+    dest.port = bpf_ntohs(tcp_hdr->dest);
+    bpf_printk("dest.port: %d, dest.ip: %d\n", dest.port, *(__u32*)dest.ip);
+    struct target_keys* keys = bpf_map_lookup_elem(&secrets, &dest);
+    if (!keys) {
+        pf_printk("unknown destination\n");
         return TC_ACT_OK;
     }
-    // Example: Log that we're processing egress traffic
-    // (In production, you'd use perf events or other mechanisms)
-    
-    // Allow packet to continue
+    if (tcp_hdr->syn && !tcp_hdr->ack) {
+        add_digest(ip_header_offset, is_ipv6, pkt_len, ctx, keys);
+        return TC_ACT_OK;
+    }
     return TC_ACT_OK;
 }
 
