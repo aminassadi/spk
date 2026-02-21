@@ -20,7 +20,7 @@ This project takes that concept and pushes it one step further.
 
 Port knocking is the older technique. The client "knocks" on a sequence of closed ports in a specific order, and the server watches for that sequence and opens a port. It is simple but fragile — the sequence is observable, replayable, and there is no real cryptographic guarantee.
 
-SPA replaces the sequence with a single packet containing a cryptographic token (a MAC over a timestamp, the client's IP, and a shared secret). Because the token is time-bound and one-use, it cannot be replayed. References: [fwknop](https://github.com/mrash/fwknop) is the most widely used SPA implementation, and the original concept is described in [Rash, M. (2006). Single Packet Authorization with Fwknop](https://www.usenix.org/legacy/events/lisa06/tech/rash.html).
+SPA replaces the sequence with a single packet containing a cryptographic token (a MAC over a timestamp, the client's IP, and a shared secret). Because the token is time-bound and one-use, it cannot be replayed. 
 
 ### How existing SPA works vs. how this project works
 
@@ -166,18 +166,6 @@ sudo ./target/debug/spak-client
 ```
 
 After this, any outgoing TCP SYN to a destination listed in the client's `secrets` map will automatically carry the SPA option.
-
----
-
-## BPF maps
-
-| Map | Program | Key | Value | Purpose |
-|-----|---------|-----|-------|---------|
-| `secrets` (client) | TC egress | `struct destination` | `struct target_keys` | Keys + key_id per destination |
-| `secrets` (server) | XDP | `u16` key_id | `struct keys` | Global key store |
-| `protected_destinations` | XDP | `struct destination` | `u8` | Which destinations require SPA |
-| `destination_secrets` | XDP | `struct dest_key_id` | `struct keys` | Per-destination per-key lookup |
-| `legitimate_flows` | XDP | `struct flow` | `u32` | Authenticated flows cache (LRU) |
 
 ---
 
