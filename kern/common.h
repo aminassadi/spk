@@ -47,6 +47,12 @@ struct destination
     __u16 port;
 };
 
+// Composite key for flat destination_secrets lookup: (destination, key_id)
+struct dest_key_id {
+    struct destination dest;  // 18 bytes
+    __u16 key_id;             // 2 bytes  → total 20 bytes, no padding
+};
+
 struct target_keys{
     struct keys keys;
     __u16 key_id;

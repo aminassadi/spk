@@ -9,10 +9,26 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
+    __uint(max_entries, 256);
     __type(key, __u16);
     __type(value, struct keys); 
   } secrets SEC(".maps");
+
+  // Which destinations are SPA-protected (key = struct destination, value = unused __u8)
+  struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct destination);
+    __type(value, __u8);
+  } protected_destinations SEC(".maps");
+
+  // Flat composite map: (destination + key_id) -> secret keys
+  struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct dest_key_id);
+    __type(value, struct keys);
+  } destination_secrets SEC(".maps");
 
   struct {
     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
@@ -64,34 +80,24 @@ __attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr*
 }
 
 __attribute__((always_inline)) static inline bool
-authenticate_client(struct tcphdr* tcph, void* data_end, __u32 src_ip)
+authenticate_client(struct tcphdr* tcph, __u32 src_ip,
+                    struct tcp_opt_spa* spa_opt, struct keys* secret)
 {
-    struct tcp_opt_spa* spa_opt = NULL;
-    if (!extract_spa_opt(tcph, data_end, &spa_opt)) {
-        return false;
-    }
-    
     // Prepare input for SipHash calculation
     struct spa_input input;
     memset(&input, 0, sizeof(input));
-    input.exid = spa_opt->exid;           // 2B, network order
-    input.ver = spa_opt->ver;            // 1B
-    input.key_id = spa_opt->key_id;      // 2B
-    input.time_step = spa_opt->time_step; // 4B, network order
-    input.tcp_seq = tcph->seq;           // 4B, TCP seq (client ISN)
-    
-   // Get secret key based on key_id
-    struct keys* secret_ptr = bpf_map_lookup_elem(&secrets, &spa_opt->key_id);
-    if (!secret_ptr) {
-        return false; // Unknown key_id
-    }
-    
+    input.exid      = spa_opt->exid;
+    input.ver       = spa_opt->ver;
+    input.key_id    = spa_opt->key_id;
+    input.time_step = spa_opt->time_step;
+    input.tcp_seq   = tcph->seq;
+
     // Calculate SipHash-2-4
-    __u64 k0 = secret_ptr->key1;
-    __u64 k1 = secret_ptr->key2;
+    __u64 k0   = secret->key1;
+    __u64 k1   = secret->key2;
     __u64 hash = siphash_2_4(k0, k1, &input);
-    
-    // Compare with received tag (first 8 bytes)
+
+    // Compare with received tag (first 8 bytes of spa_opt->tag)
     __u64 received_tag = *(__u64*)spa_opt->tag;
     return (hash == received_tag);
 }
@@ -127,6 +133,8 @@ int xdp_ingress(struct xdp_md *ctx)
 
     bool is_fragment = false;
     struct flow current_flow;
+    struct destination current_destination;
+    memset(&current_destination, 0, sizeof(current_destination));
     memset(&current_flow, 0, sizeof(current_flow));
     current_flow.proto = eth->h_proto;
     if (bpf_ntohs(eth->h_proto) == ETH_P_IP)
@@ -140,6 +148,7 @@ int xdp_ingress(struct xdp_md *ctx)
         }
         current_flow.src_ip = iph->saddr;
         current_flow.dst_ip = iph->daddr;
+        memcpy(&current_destination.ip, &iph->daddr, 4);
         proto = iph->protocol;
         is_fragment = (bool)(u16)(iph->frag_off & bpf_htons(IP_MF));
     }
@@ -154,6 +163,7 @@ int xdp_ingress(struct xdp_md *ctx)
         }
         memcpy(&current_flow.src_ipv6, &ip6h->saddr, 16);
         memcpy(&current_flow.dst_ipv6, &ip6h->daddr, 16);
+        memcpy(&current_destination.ip, &ip6h->daddr, 16);
         proto = ip6h->nexthdr;
         if (ip6h->nexthdr == IPPROTO_FRAGMENT)
         {
@@ -183,32 +193,44 @@ int xdp_ingress(struct xdp_md *ctx)
         bpf_printk("malformed packet\n");
         return XDP_DROP;
     }
+    current_destination.port = tcp_hdr->dest;
     current_flow.dst_port = tcp_hdr->dest;
     current_flow.src_port = tcp_hdr->source;
-    if (tcp_hdr->syn && !tcp_hdr->ack) {
-        // This is a SYN packet - check for auth option
-        if (tcp_hdr->dest == bpf_htons(22)) { 
-            // Look for your auth option in TCP options
-            if (authenticate_client(tcp_hdr, data_end, current_flow.src_ip)) {
-                __u32 auth_time = bpf_ktime_get_ns() / 1000000000; // Current time in seconds
-                bpf_map_update_elem(&legitimate_flows, &current_flow, &auth_time, BPF_ANY);
-                return XDP_PASS; 
-            } else {
-                bpf_printk("authentication failed\n");
-                return XDP_DROP; 
-            }
-        }
-    }
-    
-    //check if flow is already authenticated
-    if (current_flow.dst_port == bpf_htons(22)) {
-        __u32* auth_time = bpf_map_lookup_elem(&legitimate_flows, &current_flow);
-        if (!auth_time) {
-            bpf_printk("not authenticated\n");
-            return XDP_DROP; // Not authenticated
-        }
-    }
-    
-    return XDP_PASS;
 
+    // Is this destination SPA-protected?
+    __u8* is_protected = bpf_map_lookup_elem(&protected_destinations, &current_destination);
+    if (!is_protected) {
+        return XDP_PASS;  // unprotected destination, allow all traffic
+    }
+
+    if (tcp_hdr->syn && !tcp_hdr->ack) {
+        // Extract SPA TCP option to get key_id
+        struct tcp_opt_spa* spa_opt = NULL;
+        if (!extract_spa_opt(tcp_hdr, data_end, &spa_opt)) {
+            bpf_printk("protected dest: SYN without SPA, dropping\n");
+            return XDP_DROP;
+        }
+
+        // Composite lookup: (destination, key_id) -> secret keys
+        struct dest_key_id lookup_key;
+        memset(&lookup_key, 0, sizeof(lookup_key));
+        lookup_key.dest   = current_destination;
+        lookup_key.key_id = spa_opt->key_id;
+
+        struct keys* secret = bpf_map_lookup_elem(&destination_secrets, &lookup_key);
+        if (!secret) {
+            bpf_printk("no secret for this destination+key_id\n");
+            return XDP_DROP;
+        }
+
+        if (!authenticate_client(tcp_hdr, current_flow.src_ip, spa_opt, secret)) {
+            bpf_printk("SPA authentication failed\n");
+            return XDP_DROP;
+        }
+        bpf_printk("SPA authenticated, passing SYN\n");
+        return XDP_PASS;
+    }
+
+    return XDP_PASS;  // non-SYN to protected destination (legitimate established flow)
 }
+
