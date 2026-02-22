@@ -1,0 +1,19 @@
+@startuml
+actor "Client Application" as Client
+participant "spak client (eBPF TC hook)" as SPAK_Client
+participant "Network" as Net
+participant "spak server (eBPF XDP hook)" as SPAK_Server
+participant "Server Application" as ServerApp
+
+Client -> SPAK_Client : TCP SYN (connect())
+SPAK_Client -> SPAK_Client : Add SPA digest as TCP option
+SPAK_Client -> Net : Modified TCP SYN (with SPA option)
+Net -> SPAK_Server : Forward packet
+SPAK_Server -> SPAK_Server : Validate SPA option & token
+alt Valid SPA token
+    SPAK_Server -> ServerApp : Allow SYN to kernel TCP stack
+    ServerApp -> Client : Establish connection
+else Invalid or missing SPA token
+    SPAK_Server -> SPAK_Server : XDP_DROP (packet dropped)
+end
+@enduml
