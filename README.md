@@ -31,6 +31,27 @@ Every SPA implementation the author is aware of works the same way at the protoc
 3. Client then initiates a normal TCP connection inside that window.
 
 This means two round-trip phases. The auth packet and the actual connection are separate. There is a timing window between them, and the client needs extra tooling to send the auth packet.
+```plantuml
+@startuml
+actor "Client Application" as Client
+participant "spak client (eBPF TC hook)" as SPAK_Client
+participant "Network" as Net
+participant "spak server (eBPF XDP hook)" as SPAK_Server
+participant "Server Application" as ServerApp
+
+Client -> SPAK_Client : TCP SYN (connect())
+SPAK_Client -> SPAK_Client : Add SPA digest as TCP option
+SPAK_Client -> Net : Modified TCP SYN (with SPA option)
+Net -> SPAK_Server : Forward packet
+SPAK_Server -> SPAK_Server : Validate SPA option & token
+alt Valid SPA token
+    SPAK_Server -> ServerApp : Allow SYN to kernel TCP stack
+    ServerApp -> Client : Establish connection
+else Invalid or missing SPA token
+    SPAK_Server -> SPAK_Server : XDP_DROP (packet dropped)
+end
+@enduml
+```
 
 **spak does it in one step.** Instead of sending a separate auth packet, the client embeds the authentication token directly inside the TCP SYN packet as a TCP option. The server inspects that option before deciding whether to let the SYN through. There is no timing window, no extra packet, and no separate auth phase — the handshake either succeeds or is dropped at XDP, before it ever touches the kernel's TCP stack.
 
@@ -94,28 +115,6 @@ The TCP sequence number (ISN) is included in the hash input so the tag is tied t
 The authentication tag is computed with **SipHash-2-4**, a fast keyed hash function designed by Jean-Philippe Aumasson and Daniel J. Bernstein ([paper](https://www.aumasson.jp/siphash/siphash.pdf)).
 
 SipHash was built specifically for short, variable-length inputs — exactly the kind of thing this project hashes (a ~14-byte struct). It is used in hash table implementations inside the Linux kernel and the Rust standard library, among others, because it offers a good balance: fast enough to run on every packet, and secure enough to prevent MAC forgery without a full HMAC construction. Running it inside an XDP or TC eBPF program adds essentially no measurable latency.
-
----
-
-## Project structure
-
-```
-spak/
-├── kern/
-│   ├── client/
-│   │   └── spak.client.bpf.c   # TC egress: injects SPA option into outgoing SYNs
-│   ├── server/
-│   │   └── spak.server.bpf.c   # XDP ingress: verifies SPA option on incoming SYNs
-│   ├── common.h                 # Shared structs (destination, keys, tcp_opt_spa, …)
-│   └── siphash.h                # SipHash-2-4 implementation for BPF
-├── spak-client/
-│   └── src/main.rs              # Userspace loader for the client eBPF program (Aya)
-├── spak-server/
-│   └── src/main.rs              # Userspace loader for the server eBPF program (Aya)
-├── tests/
-│   └── test_siphash.c           # Reference SipHash test against known vectors
-└── libbpf/                      # libbpf submodule (used for BPF compilation)
-```
 
 ---
 
