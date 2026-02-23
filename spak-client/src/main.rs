@@ -1,18 +1,16 @@
+mod bpf;
+
 use anyhow::{anyhow, Context, Result};
-use aya::programs::{self, tc::SchedClassifierLinkId};
-use aya::{include_bytes_aligned, maps::HashMap, Ebpf};
+use aya::include_bytes_aligned;
+use bpf::{parse_secret_key, BpfObject, Destination, TargetKeys};
 use log::warn;
+use std::env;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-
-use std::cell::RefCell;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-use std::rc::Rc;
-
-const IFACE: &str = "lo";
 
 fn ipv4_to_u32(ip_str: &str) -> Option<u32> {
     let ip: Ipv4Addr = ip_str.parse().ok()?;
@@ -20,7 +18,7 @@ fn ipv4_to_u32(ip_str: &str) -> Option<u32> {
 }
 
 fn ipv4_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
-    let mut ip_u32 = ipv4_to_u32(ip_str)?;
+    let ip_u32 = ipv4_to_u32(ip_str)?;
     let mut bytes: [u8; 16] = [0u8; 16];
     bytes[..4].copy_from_slice(&ip_u32.to_be_bytes());
     Some(bytes)
@@ -31,78 +29,42 @@ fn ipv6_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
     Some(ip.octets())
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-struct Keys {
-    key1: u64,
-    key2: u64,
-}
-unsafe impl aya::Pod for Keys {}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-struct TargetKeys {
-    keys: Keys,
-    key_id: u16,
-}
-unsafe impl aya::Pod for TargetKeys {}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-struct Destination {
-    ip: [u8; 16],
-    port: u16,
-}
-unsafe impl aya::Pod for Destination {}
-
-struct BpfObject {
-    value: RefCell<Ebpf>,
-}
-
-impl BpfObject {
-    fn new(data: &[u8]) -> Result<Self> {
-        let bpf: Ebpf = Ebpf::load(data)?;
-        Ok(Self {
-            value: RefCell::new(bpf),
-        })
-    }
-
-    fn attach_program(&self, name: &str) -> Result<SchedClassifierLinkId, anyhow::Error> {
-        let mut bpf = self.value.borrow_mut();
-        let program: &mut programs::SchedClassifier = bpf
-            .program_mut(name)
-            .context("failed to find program")
-            .map_err(|e| anyhow!(e))?
-            .try_into()?;
-        program.load()?;
-        let link_id = program.attach(IFACE, aya::programs::TcAttachType::Egress)?;
-        Ok(link_id)
-    }
-
-    fn detach_program(&self, link_id: SchedClassifierLinkId) -> Result<(), anyhow::Error> {
-        let mut bpf = self.value.borrow_mut();
-        let program: &mut programs::SchedClassifier = bpf
-            .program_mut("tc_egress")
-            .context("failed to find tc_egress program")
-            .map_err(|e| anyhow!(e))?
-            .try_into()?;
-        program.detach(link_id)?;
-        Ok(())
-    }
-
-    fn insert_secret(&self, key: Destination, secret: TargetKeys) -> Result<(), String> {
-        let mut bpf = self.value.borrow_mut();
-        let mut secrets =
-            HashMap::try_from(bpf.map_mut("secrets").ok_or("Failed to get secrets map")?).unwrap();
-        secrets.insert(key, secret, 0).map_err(|e| e.to_string())?;
-        Ok(())
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    ensure_clsact_qdisc(IFACE).context("failed to prepare clsact qdisc")?;
+    // Parse command-line arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 4 {
+        eprintln!("Usage: {} <ip> <port> <key_id>", args[0]);
+        eprintln!("Environment variable SECRET_KEY must be set (32 hex characters, 16 bytes)");
+        eprintln!(
+            "Example: SECRET_KEY=112233445566778899aabbccddeeff00 {} 127.0.0.1 22 1",
+            args[0]
+        );
+        std::process::exit(1);
+    }
+
+    let ip_str = &args[1];
+    let port_str = &args[2];
+    let key_id_str = &args[3];
+
+    let target_ip: [u8; 16] = ipv4_to_bytes(ip_str)
+        .or_else(|| ipv6_to_bytes(ip_str))
+        .ok_or_else(|| anyhow!("Invalid IP address: {ip_str}"))?;
+
+    let port: u16 = port_str
+        .parse()
+        .with_context(|| format!("Invalid port number: {port_str}"))?;
+
+    let key_id: u16 = key_id_str
+        .parse()
+        .with_context(|| format!("Invalid key_id: {key_id_str}"))?;
+
+    let secret_key_hex =
+        env::var("SECRET_KEY").context("SECRET_KEY environment variable not set")?;
+    let keys = parse_secret_key(&secret_key_hex).context("Failed to parse SECRET_KEY")?;
+
+    ensure_clsact_qdisc("lo").context("failed to prepare clsact qdisc")?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
@@ -112,19 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: &[u8] = include_bytes_aligned!("../../kern/.output/spak.client.bpf.o");
     let bpf_object = BpfObject::new(data)?;
     let link_id = bpf_object.attach_program("tc_egress")?;
-    let key_id: u16 = 1;
-    let secret = TargetKeys {
-        keys: Keys {
-            key1: 0x1122334455667788,
-            key2: 0x99aabbccddeeff00,
-        },
-        key_id: key_id,
-    };
-    let target_ip: [u8; 16] = ipv4_to_bytes("127.0.0.1").unwrap();
+
+    let secret = TargetKeys { keys, key_id };
 
     let dest = Destination {
         ip: target_ip,
-        port: 22,
+        port,
     };
     bpf_object.insert_secret(dest, secret)?;
     while !shutdown.load(Ordering::SeqCst) {
@@ -132,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Detaching eBPF program...");
     bpf_object.detach_program(link_id)?;
-    if let Err(err) = remove_clsact_qdisc(IFACE) {
+    if let Err(err) = remove_clsact_qdisc("lo") {
         warn!("{err:#}");
     }
     Ok(())

@@ -311,7 +311,6 @@ int tc_egress(struct __sk_buff *ctx)
         return TC_ACT_SHOT;
     }
     dest.port = bpf_ntohs(tcp_hdr->dest);
-    bpf_printk("dest.port: %d, dest.ip: %d\n", dest.port, *(__u32*)dest.ip);
     struct target_keys* keys = bpf_map_lookup_elem(&secrets, &dest);
     if (!keys) {
         return TC_ACT_OK;
