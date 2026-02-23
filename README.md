@@ -128,25 +128,61 @@ cargo build
 
 ## Running
 
+### Prerequisites
+
+Both client and server require the `SECRET_KEY` environment variable to be set. The secret key must be 32 hex characters (16 bytes), representing a 128-bit key split into two 64-bit values:
+
+```bash
+export SECRET_KEY=112233445566778899aabbccddeeff00
+```
+
 ### Server
 
 Load the XDP program on the interface and populate the maps:
 
 ```bash
-sudo ./target/debug/spak-server
+sudo ./target/debug/spak-server <ip> <port> <key_id> <iface>
 ```
 
-The server attaches to `lo` by default. Edit `spak-server/src/main.rs` to change the interface and the protected destinations/keys before building.
+**Arguments:**
+- `<ip>` - IP address of the protected destination (IPv4 or IPv6)
+- `<port>` - Port number of the protected destination
+- `<key_id>` - Secret key ID (used for key rotation)
+- `<iface>` - Network interface name to attach the XDP program (e.g., `lo`, `eth0`, `ens01`)
+
+**Example:**
+```bash
+export SECRET_KEY=112233445566778899aabbccddeeff00
+sudo ./target/debug/spak-server 127.0.0.1 22 1 lo
+```
+
+This will:
+1. Attach the XDP program to the specified interface
+2. Protect the destination `127.0.0.1:22`
+3. Use key ID `1` with the secret from `SECRET_KEY`
+4. Populate all necessary BPF maps for authentication
 
 ### Client
 
 Load the TC egress program:
 
 ```bash
-sudo ./target/debug/spak-client
+sudo ./target/debug/spak-client <ip> <port> <key_id> <iface>
 ```
 
-After this, any outgoing TCP SYN to a destination listed in the client's `secrets` map will automatically carry the SPA option.
+**Arguments:**
+- `<ip>` - IP address of the target server (IPv4 or IPv6)
+- `<port>` - Port number of the target server
+- `<key_id>` - Secret key ID (must match the server's key_id)
+- `<iface>` - Network interface name to attach the TC egress program (e.g., `lo`, `eth0`, `ens01`)
+
+**Example:**
+```bash
+export SECRET_KEY=112233445566778899aabbccddeeff00
+sudo ./target/debug/spak-client 127.0.0.1 22 1 lo
+```
+
+After this, any outgoing TCP SYN to the specified destination will automatically carry the SPA option. The client will run until interrupted with Ctrl+C, at which point it will gracefully detach the eBPF program.
 
 ---
 
@@ -154,10 +190,9 @@ After this, any outgoing TCP SYN to a destination listed in the client's `secret
 
 This is experimental work-in-progress. The core packet injection and verification paths work. Things that are still rough:
 
-- The server currently only attaches to `lo`; interface selection is hardcoded
 - Replay prevention via `time_step` is not yet enforced on the server
 - The `legitimate_flows` map is populated but not yet used to gate non-SYN packets
-- No key exchange mechanism; keys are hardcoded at startup
+
 
 ---
 
