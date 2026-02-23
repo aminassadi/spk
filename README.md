@@ -65,6 +65,8 @@ Non-SYN packets are passed through normally. Once a connection is established (t
 
 TCP options are a standard extension mechanism. Each option has a `kind` byte, a `len` byte, and then its data. Kind 253 and 254 are reserved for experiments by [RFC 6994](https://datatracker.ietf.org/doc/html/rfc6994), which also defines the `ExID` field to disambiguate experiments.
 
+**Note:** Because this uses an experimental TCP option (kind 253), standard TCP implementations will not recognize or preserve it. This project requires both client and server to run compatible eBPF programs and cannot be used with standard TCP stacks.
+
 The SPA option used in this project looks like this:
 
 ```
@@ -187,6 +189,8 @@ After this, any outgoing TCP SYN to the specified destination will automatically
 ---
 
 ## Status
+
+**⚠️ Important Note:** The SPA option uses TCP option kind 253 (experimental), which is not a standard TCP option. This means that standard TCP implementations will ignore or strip this option, and the project cannot be used in real-world production scenarios without both endpoints running compatible eBPF programs. This is experimental research code intended for demonstration and testing purposes only.
 
 This is experimental work-in-progress. The core packet injection and verification paths work. Things that are still rough:
 
