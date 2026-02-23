@@ -1,113 +1,68 @@
-use aya::maps::HashMap;
-use aya::programs::Xdp;
-use aya::programs::XdpFlags;
-use aya::{include_bytes_aligned, Ebpf};
+mod bpf;
+
+use anyhow::{anyhow, Context, Result};
+use aya::include_bytes_aligned;
+use bpf::{ipv4_to_bytes, ipv6_to_bytes, parse_secret_key, BpfServer, Destination};
 use log::info;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-
-// Must match `struct destination` in kern/common.h  (16-byte IP + 2-byte port = 18 bytes)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Destination {
-    ip: [u8; 16],
-    port: u16,
-}
-unsafe impl aya::Pod for Destination {}
-
-// Must match `struct dest_key_id` in kern/common.h  (Destination + key_id = 20 bytes)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct DestKeyId {
-    dest: Destination,
-    key_id: u16,
-}
-unsafe impl aya::Pod for DestKeyId {}
-
-// Must match `struct keys` in kern/common.h  (two u64 = 16 bytes)
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-struct Keys {
-    key1: u64,
-    key2: u64,
-}
-unsafe impl aya::Pod for Keys {}
-
-fn ipv4_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
-    let ip: Ipv4Addr = ip_str.parse().ok()?;
-    let mut bytes = [0u8; 16];
-    bytes[..4].copy_from_slice(&ip.to_bits().to_be_bytes());
-    Some(bytes)
-}
-
-#[allow(dead_code)]
-fn ipv6_to_bytes(ip_str: &str) -> Option<[u8; 16]> {
-    let ip: Ipv6Addr = ip_str.parse().ok()?;
-    Some(ip.octets())
-}
+use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
+    // Parse command-line arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 5 {
+        eprintln!("Usage: {} <ip> <port> <key_id> <iface>", args[0]);
+        eprintln!("Environment variable SECRET_KEY must be set (32 hex characters, 16 bytes)");
+        eprintln!(
+            "Example: SECRET_KEY=112233445566778899aabbccddeeff00 {} 127.0.0.1 22 1 ens01",
+            args[0]
+        );
+        std::process::exit(1);
+    }
+
+    let ip_str = &args[1];
+    let port_str = &args[2];
+    let key_id_str = &args[3];
+    let iface = &args[4];
+
+    let target_ip: [u8; 16] = ipv4_to_bytes(ip_str)
+        .or_else(|| ipv6_to_bytes(ip_str))
+        .ok_or_else(|| anyhow!("Invalid IP address: {ip_str}"))?;
+
+    let port: u16 = port_str
+        .parse::<u16>()
+        .with_context(|| format!("Invalid port number: {port_str}"))?
+        .to_be();
+
+    let key_id: u16 = key_id_str
+        .parse()
+        .with_context(|| format!("Invalid key_id: {key_id_str}"))?;
+
+    let secret_key_hex =
+        env::var("SECRET_KEY").context("SECRET_KEY environment variable not set")?;
+    let keys = parse_secret_key(&secret_key_hex).context("Failed to parse SECRET_KEY")?;
+
     info!("Starting SPAK eBPF program...");
 
     let data = include_bytes_aligned!("../../kern/.output/spak.server.bpf.o");
-    let mut bpf = Ebpf::load(data)?;
+    let mut bpf_server = BpfServer::new(data)?;
 
-    // Load and attach XDP program
-    let program: &mut Xdp = bpf.program_mut("xdp_ingress").unwrap().try_into()?;
-    program.load()?;
-    program.attach("lo", XdpFlags::default())?;
-
+    bpf_server.attach_xdp(iface)?;
     info!("eBPF program loaded successfully");
 
-    // ── 1. Populate the global `secrets` map (key_id -> keys) ───────────────
-    let mut secrets: HashMap<_, u16, Keys> =
-        HashMap::try_from(bpf.map_mut("secrets").ok_or("Failed to get secrets map")?)?;
+    bpf_server.insert_secret(key_id, keys)?;
+    info!("Inserted key_id={key_id} into secrets map");
 
-    secrets.insert(
-        1,
-        Keys {
-            key1: 0x1122334455667788,
-            key2: 0x99aabbccddeeff00,
-        },
-        0,
-    )?;
-    info!("Inserted key_id=1 into secrets map");
-
-    // ── 2. Populate `protected_destinations` (destination -> 1u8) ───────────
-    let mut protected: HashMap<_, Destination, u8> = HashMap::try_from(
-        bpf.map_mut("protected_destinations")
-            .ok_or("Failed to get protected_destinations map")?,
-    )?;
-
-    // Protect 127.0.0.1:22
-    let dest_lo_22 = Destination {
-        ip: ipv4_to_bytes("127.0.0.1").unwrap(),
-        port: 22u16.to_be(), // network byte order
+    let dest = Destination {
+        ip: target_ip,
+        port,
     };
-    protected.insert(dest_lo_22, 1u8, 0)?;
-    info!("Protected destination 127.0.0.1:22");
+    bpf_server.insert_protected_destination(dest)?;
+    info!("Protected destination {ip_str}:{port_str}");
 
-    // ── 3. Populate `destination_secrets` ((destination, key_id) -> keys) ───
-    let mut destination_secrets: HashMap<_, DestKeyId, Keys> = HashMap::try_from(
-        bpf.map_mut("destination_secrets")
-            .ok_or("Failed to get destination_secrets map")?,
-    )?;
-
-    let composite_key = DestKeyId {
-        dest: dest_lo_22,
-        key_id: 1, // same key_id as in secrets map
-    };
-    destination_secrets.insert(
-        composite_key,
-        Keys {
-            key1: 0x1122334455667788,
-            key2: 0x99aabbccddeeff00,
-        },
-        0,
-    )?;
-    info!("Inserted (127.0.0.1:22, key_id=1) into destination_secrets");
+    bpf_server.insert_destination_secret(dest, key_id, keys)?;
+    info!("Inserted ({ip_str}:{port_str}, key_id={key_id}) into destination_secrets");
 
     info!("All maps populated. Server running...");
     loop {

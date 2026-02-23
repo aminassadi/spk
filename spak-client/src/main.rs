@@ -34,11 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse command-line arguments
     let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
-        eprintln!("Usage: {} <ip> <port> <key_id>", args[0]);
+    if args.len() != 5 {
+        eprintln!("Usage: {} <ip> <port> <key_id> <iface>", args[0]);
         eprintln!("Environment variable SECRET_KEY must be set (32 hex characters, 16 bytes)");
         eprintln!(
-            "Example: SECRET_KEY=112233445566778899aabbccddeeff00 {} 127.0.0.1 22 1",
+            "Example: SECRET_KEY=112233445566778899aabbccddeeff00 {} 127.0.0.1 22 1 lo",
             args[0]
         );
         std::process::exit(1);
@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ip_str = &args[1];
     let port_str = &args[2];
     let key_id_str = &args[3];
+    let iface = &args[4];
 
     let target_ip: [u8; 16] = ipv4_to_bytes(ip_str)
         .or_else(|| ipv6_to_bytes(ip_str))
@@ -64,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::var("SECRET_KEY").context("SECRET_KEY environment variable not set")?;
     let keys = parse_secret_key(&secret_key_hex).context("Failed to parse SECRET_KEY")?;
 
-    ensure_clsact_qdisc("lo").context("failed to prepare clsact qdisc")?;
+    ensure_clsact_qdisc(iface).context("failed to prepare clsact qdisc")?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
@@ -73,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let data: &[u8] = include_bytes_aligned!("../../kern/.output/spak.client.bpf.o");
     let bpf_object = BpfObject::new(data)?;
-    let link_id = bpf_object.attach_program("tc_egress")?;
+    let link_id = bpf_object.attach_program("tc_egress", iface)?;
 
     let secret = TargetKeys { keys, key_id };
 
@@ -87,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Detaching eBPF program...");
     bpf_object.detach_program(link_id)?;
-    if let Err(err) = remove_clsact_qdisc("lo") {
+    if let Err(err) = remove_clsact_qdisc(iface) {
         warn!("{err:#}");
     }
     Ok(())

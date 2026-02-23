@@ -3,8 +3,6 @@ use aya::programs::{self, tc::SchedClassifierLinkId};
 use aya::{maps::HashMap, Ebpf};
 use std::cell::RefCell;
 
-const IFACE: &str = "lo";
-
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Keys {
@@ -41,7 +39,11 @@ impl BpfObject {
         })
     }
 
-    pub fn attach_program(&self, name: &str) -> Result<SchedClassifierLinkId, anyhow::Error> {
+    pub fn attach_program(
+        &self,
+        name: &str,
+        iface: &str,
+    ) -> Result<SchedClassifierLinkId, anyhow::Error> {
         let mut bpf = self.value.borrow_mut();
         let program: &mut programs::SchedClassifier = bpf
             .program_mut(name)
@@ -49,7 +51,7 @@ impl BpfObject {
             .map_err(|e| anyhow!(e))?
             .try_into()?;
         program.load()?;
-        let link_id = program.attach(IFACE, aya::programs::TcAttachType::Egress)?;
+        let link_id = program.attach(iface, aya::programs::TcAttachType::Egress)?;
         Ok(link_id)
     }
 
