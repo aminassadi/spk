@@ -214,18 +214,16 @@ __attribute__((always_inline)) static inline void add_digest(int ip_header_offse
             bpf_printk("malformed packet4\n");
             return;
         }
-        bpf_printk("tcp->check: %d\n", tcph->check);
         iph->tot_len =  bpf_htons(bpf_ntohs(iph->tot_len) + spa_opt_size);
         u64 csum = 0;
         iph->check = 0;
         ipv4_csum((void*)iph, sizeof(struct iphdr), &csum);
         iph->check = csum;
         tcph->check = csum_tcpudp_ip(iph->saddr, iph->daddr, tcp_len, IPPROTO_TCP, value);
-        bpf_printk("after: tcp->check: %d\n", tcph->check);
     }
     ret = bpf_skb_change_tail(ctx, actual_packet_size, 0);
     if (ret < 0) {
-        bpf_printk("failed to change tail: %d\n", ret);
+        bpf_printk("failed to change tail: %d", ret);
         return; 
     }
 }
@@ -240,7 +238,7 @@ int tc_egress(struct __sk_buff *ctx)
     u8 proto = 0;
     if (unlikely(data + pkt_len > data_end))
     {
-        bpf_printk("malformed packet\n");
+        bpf_printk("malformed packet");
         return TC_ACT_SHOT;
     }
     if (eth->h_proto == 0xa888 || eth->h_proto == 0x0081)
@@ -248,7 +246,7 @@ int tc_egress(struct __sk_buff *ctx)
         struct vlan_hdr* vlan_hdr = data + pkt_len;
         if (unlikely(((void*)(vlan_hdr + sizeof(struct vlan_hdr)) > data_end)))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return TC_ACT_SHOT;
         }
         pkt_len += sizeof(struct vlan_hdr);
@@ -268,7 +266,7 @@ int tc_egress(struct __sk_buff *ctx)
         pkt_len += (iph->ihl * 4);
         if (unlikely((void*)iph + sizeof(struct iphdr) > data_end))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return TC_ACT_SHOT;
         }
         memcpy(&dest.ip, &iph->daddr, 4);
@@ -282,7 +280,7 @@ int tc_egress(struct __sk_buff *ctx)
         pkt_len += sizeof(struct ipv6hdr);
         if (unlikely(data + pkt_len > data_end))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return TC_ACT_SHOT;
         }
         memcpy(&dest.ip, &ip6h->daddr, 16);
@@ -294,7 +292,7 @@ int tc_egress(struct __sk_buff *ctx)
             pkt_len += sizeof(struct ipv6_frag_header);
             if (unlikely(data + pkt_len > data_end))
             {
-                bpf_printk("malformed packet\n");
+                bpf_printk("malformed packet");
                 return TC_ACT_SHOT;
             }
             proto = ip6_fragh->nexthdr;
@@ -307,7 +305,7 @@ int tc_egress(struct __sk_buff *ctx)
     struct tcphdr* tcp_hdr = data + pkt_len;
     if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
     {
-        bpf_printk("malformed packet\n");
+        bpf_printk("malformed packet");
         return TC_ACT_SHOT;
     }
     dest.port = bpf_ntohs(tcp_hdr->dest);

@@ -53,9 +53,7 @@ __attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr*
             return false; // No options present
         }
         __u8 kind = *(__u8*)opt_ptr;
-        bpf_printk("kind: %d\n", kind);
         if (kind == 253) {
-            bpf_printk("found spa opt\n");
             *spa_opt = (struct tcp_opt_spa*)opt_ptr;
             if (unlikely((__u8*)opt_ptr + sizeof(struct tcp_opt_spa) > (__u8*)data_end)) {
                 return false;
@@ -73,7 +71,6 @@ __attribute__((always_inline)) static inline bool extract_spa_opt(struct tcphdr*
             return false;
         }
         __u8 len = *(__u8*)(opt_ptr + 1);
-        bpf_printk("len: %d\n", len);
         opt_ptr += len;
     }
     return false;
@@ -91,7 +88,7 @@ authenticate_client(struct tcphdr* tcph, __u32 src_ip,
     input.key_id    = spa_opt->key_id;
     input.time_step = spa_opt->time_step;
     input.tcp_seq   = tcph->seq;
-
+    
     // Calculate SipHash-2-4
     __u64 k0   = secret->key1;
     __u64 k1   = secret->key2;
@@ -113,7 +110,7 @@ int xdp_ingress(struct xdp_md *ctx)
 
     if (unlikely(data + pkt_len > data_end))
     {
-        bpf_printk("malformed packet\n");
+        bpf_printk("malformed packet");
         return XDP_DROP;
     }
     if (eth->h_proto == 0xa888 || eth->h_proto == 0x0081)
@@ -121,7 +118,7 @@ int xdp_ingress(struct xdp_md *ctx)
         struct vlan_hdr* vlan_hdr = data + pkt_len;
         if (unlikely(((void*)(vlan_hdr + sizeof(struct vlan_hdr)) > data_end)))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return XDP_DROP;
         }
         pkt_len += sizeof(struct vlan_hdr);
@@ -143,7 +140,7 @@ int xdp_ingress(struct xdp_md *ctx)
         pkt_len += (iph->ihl * 4);
         if (unlikely((void*)iph + sizeof(struct iphdr) > data_end))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return XDP_DROP;
         }
         current_flow.src_ip = iph->saddr;
@@ -158,7 +155,7 @@ int xdp_ingress(struct xdp_md *ctx)
         pkt_len += sizeof(struct ipv6hdr);
         if (unlikely(data + pkt_len > data_end))
         {
-            bpf_printk("malformed packet\n");
+            bpf_printk("malformed packet");
             return XDP_DROP;
         }
         memcpy(&current_flow.src_ipv6, &ip6h->saddr, 16);
@@ -172,7 +169,7 @@ int xdp_ingress(struct xdp_md *ctx)
             pkt_len += sizeof(struct ipv6_frag_header);
             if (unlikely(data + pkt_len > data_end))
             {
-                bpf_printk("malformed packet\n");
+                bpf_printk("malformed packet");
                 return XDP_DROP;
             }
             proto = ip6_fragh->nexthdr;
@@ -180,7 +177,7 @@ int xdp_ingress(struct xdp_md *ctx)
     }
     if(is_fragment)
     {
-        bpf_printk("fragmented packet\n");
+        bpf_printk("fragmented packet");
         return XDP_PASS;
     }
     if(proto != IPPROTO_TCP)
@@ -190,7 +187,7 @@ int xdp_ingress(struct xdp_md *ctx)
     struct tcphdr* tcp_hdr = data + pkt_len;
     if (unlikely((void*)tcp_hdr + sizeof(struct tcphdr) > data_end))
     {
-        bpf_printk("malformed packet\n");
+        bpf_printk("malformed packet");
         return XDP_DROP;
     }
     current_destination.port = tcp_hdr->dest;
@@ -207,9 +204,9 @@ int xdp_ingress(struct xdp_md *ctx)
         // Extract SPA TCP option to get key_id
         struct tcp_opt_spa* spa_opt = NULL;
         if (!extract_spa_opt(tcp_hdr, data_end, &spa_opt)) {
-            bpf_printk("protected dest: SYN without SPA, dropping\n");
-            return XDP_DROP;
-        }
+            bpf_printk("protected dest: SYN without SPA, dropping");
+                return XDP_DROP; 
+            }
 
         // Composite lookup: (destination, key_id) -> secret keys
         struct dest_key_id lookup_key;
@@ -219,18 +216,18 @@ int xdp_ingress(struct xdp_md *ctx)
 
         struct keys* secret = bpf_map_lookup_elem(&destination_secrets, &lookup_key);
         if (!secret) {
-            bpf_printk("no secret for this destination+key_id\n");
+            bpf_printk("no secret for this destination+key_id");
             return XDP_DROP;
         }
 
         if (!authenticate_client(tcp_hdr, current_flow.src_ip, spa_opt, secret)) {
-            bpf_printk("SPA authentication failed\n");
+            bpf_printk("SPA authentication failed");
             return XDP_DROP;
         }
-        bpf_printk("SPA authenticated, passing SYN\n");
+        bpf_printk("SPA authenticated, passing SYN");
         return XDP_PASS;
     }
-
+    
     return XDP_PASS;  // non-SYN to protected destination (legitimate established flow)
 }
 
